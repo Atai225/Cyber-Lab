@@ -1,0 +1,109 @@
+## 🎯 Project Overview
+This project documents a realistic Security Operations Center (SOC) simulation focused on **Adaptive Defense Engineering** and **Threat Intelligence Pivoting**. During the deployment of endpoint monitoring tools on a legacy asset, the infrastructure presented severe architectural constraints (kernel incompatibility and protocol degradation). 
+
+Instead of halting operations, I successfully engineered a **compensating security control** using Wazuh's **File Integrity Monitoring (FIM)** engine to achieve 100% visibility and successfully detect the execution and ingestion of **Mimikatz**, a notorious credential-dumping hacktool.
+
+### Key Technical Competencies Demonstrated:
+* **Adaptive Security Engineering:** Designing alternative telemetry pipelines when primary endpoint visibility tools (e.g., Microsoft Sysmon) fail due to OS limitations.
+* **Incident Triage & Threat Intel Pivoting:** Extracting static Indicators of Compromise (IoCs) from raw SIEM JSON logs to validate True Positive security alerts against global databases (VirusTotal).
+* **Advanced Infrastructure Troubleshooting:** Resolving Linux service lock-file states, bypassing legacy OS protocol limitations (TLS 1.0 to TLS 1.2), and diagnosing kernel memory protection faults (`BEX64`).
+
+---
+
+## 🏗️ Lab Topology & Environment Specs
+* **SIEM / XDR Manager:** Ubuntu Server 22.04 LTS (Wazuh All-in-One Architecture) | IP: `10.0.2.15`
+* **Monitored Endpoint (Legacy Target):** Windows 7 Home Basic (Wazuh Agent v4.7.5)
+* **Network Mode:** Isolated VirtualBox Internal NAT Network (simulating a segmented enterprise VLAN).
+
+---
+
+## 🚧 Real-World Engineering Obstacles & Triage Workflows
+
+### 1. Network Protocol Degradation (The GitHub TLS Barrier)
+* **The Problem:** Attempting to download security binaries natively via PowerShell on Windows 7 failed with a connection closure error. The default PowerShell 2.0 engine uses deprecated TLS 1.0 protocols, which are rejected by modern secure repositories like GitHub (requiring TLS 1.2+).
+* **The Solution:** I engineered a secure bypass by staging the weaponized binaries directly on the Ubuntu Linux manager node, launching a temporary Python HTTP server (`python3 -m http.server 8080`), and pulling the packages to the Windows asset using the native `certutil -urlcache -f` command, completely bypassing the TLS handshake restriction.
+  ]]
+### 2. Kernel Incompatibility Fault (The Sysmon BEX64 Exception)
+* **The Problem:** To capture deep process-access execution logs, I attempted to install Microsoft Sysmon v15.20. The installation abruptly crashed, throwing a Windows **`BEX64` (Buffer Overflow Exception)** error. 
+* **The Root Cause Analysis:** The unpatched legacy Windows 7 kernel lacks SHA-2 code-signing support updates. It failed to validate the modern cryptographic signatures of the Sysmon driver, causing the OS Data Execution Prevention (DEP) sub-system to terminate the process instantly to protect kernel space memory.
+
+]]]
+
+### 3. SIEM Manager Lockout (Deadlock Remediation)
+* **The Problem:** Due to resource exhaustion during virtual machine booting, the `wazuh-manager` service failed to initialize, reporting a generic systemd control error.
+* **The Forensic Investigation:** Analysis of the local log pipeline (`journalctl -u wazuh-manager.service`) revealed that an uncleaned, aborted initialization attempt left behind a ghostly lock-directory. The manager threw the error: `ERROR: Another instance is locking this process. Please remove /var/ossec/var/start-script-lock`.
+* **The Remediation:** I forced file handle release using a recursive removal command (`sudo rm -rf /var/ossec/var/start-script-lock`), safely restoring the manager node to an `active` running state.
+
+---
+
+## 🛡️ Implementing the Compensating Control (The FIM Pivot)
+
+Faced with a complete lack of behavioral process logs (due to the Sysmon failure), I transitioned the defensive strategy to an event-driven asset protection framework using **Wazuh File Integrity Monitoring (FIM)**. 
+
+I modified the administrative configuration profile (`ossec.conf`) on the endpoint to bind real-time file hooks to a dedicated lab folder:
+
+<directories realtime="yes" check_all="yes">C:\Lab-FIM</directories>
+
+* **`realtime="yes"`**: Leverages instant OS filesystem notifications (`ReadDirectoryChangesW`) to bypass standard periodic scanning intervals, shipping telemetry immediately upon file creation.
+* **`check_all="yes"`**: Mandates the immediate computation and tracking of file size, local permissions, owner attributes, and multiple cryptographic hash standards (MD5, SHA1, SHA256).
+
+---
+
+## 💥 Adversary Simulation Phase (Red Team Action)
+
+To validate the compensating control, I simulated an endpoint compromise scenario by dropping the weaponized binary `mimikatz.exe` into the monitored directory path (`C:\Lab-FIM\mimikatz.exe`).
+
+The utility was then initiated from an administrative shell to simulate an interactive local credential-harvesting attempt:
+
+powershell
+cd C:\Lab-FIM
+.\mimikatz.exe
+sekurlsa::logonpasswords
+
+Even when local OS restrictions blocked the internal LSASS memory dump, the deployment objective was to test the SIEM's capability to ingest and identify the threat actor's toolkit static footprint.
+
+---
+
+## 📊 Telemetry Analysis & Incident Triage (Blue Team Investigation)
+
+Upon reviewing the Wazuh Security Events Dashboard, the SIEM successfully parsed, indexed, and generated a high-fidelity alert mapping the exact ingestion lifecycle.
+
+### 1. Security Event Ingestion
+The monitoring engine successfully intercepted the drop of the binary:
+```
+* **Event Timestamp:** `May 17, 2026 @ 16:58:37`
+* **Triggered Rule ID:** `554` (File added to the system)
+* **Alert Description:** `File added to the system.`
+* **Target Object:** `c:\lab-fim\mimikatz.exe`
+```
+# Wazuh Telemetry Dashboard Intercepting Mimikatz Ingestion
+
+### 2. Forensic Payload Analysis & Threat Intel Pivoting
+By expanding the raw JSON log payload of the triggered event, I extracted the critical static Indicators of Compromise (IoCs) generated by the FIM engine:
+
+
+json
+"syscheck": {
+    "path": "c:\\lab-fim\\mimikatz.exe",
+    "event": "added",
+    "uname": "vboxuser",
+    "md5": "[Your real mimikatz MD5 hash from the JSON view]",
+    "sha256": "[Your real mimikatz SHA256 hash from the JSON view]"
+}
+
+The Triage Workflow
+Context Differentiation: While normal user activity generates "data drift," the creation of an executable binary in a non-standard directory immediately shifts the priority level.
+
+Hash Extraction: As a SOC Analyst, I targeted the syscheck.sha256 value from the raw JSON payload.
+
+Threat Intelligence Query: Pivoting this unique cryptographic signature against open-source intelligence platforms like VirusTotal yields an immediate, overwhelming match for a classified malicious tool (HackTool.Mimikatz).
+
+Verdict: This validates the alert as a True Positive, empowering the incident response team to immediately authorize host isolation procedures.
+
+
+🧠 Strategic Retrospective & Engineering Takeaways
+Defense-in-Depth and Compensating Controls: This project highlights that a SOC engineer cannot rely on a single source of truth. When EDR or behavioral tools (Sysmon) are blocked by OS architectural limitations, a granularly configured FIM engine can effectively serve as a high-fidelity tripwire.
+
+Operational Realities over Theory: Building this laboratory exposed me to the harsh realities of enterprise security engineering: dealing with missing OS updates, broken dependencies, locked sockets, and deprecated cryptographic protocol baselines.
+
+Future Hardening (Active Response Automation): The next logical iteration of this project is the integration of automated workflows. By mapping a high-severity FIM alert matching known malicious directories to a Wazuh Active Response script, the manager can instantly execute an automated endpoint PowerShell command to isolate the host network adapter interface, mitigating the risk of lateral movement long before human analyst intervention.
